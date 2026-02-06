@@ -38,6 +38,10 @@ def extract_text_from_file(file_path: str, file_type: str) -> str:
                     text_parts.append(t)
         return "\n\n".join(text_parts) if text_parts else ""
 
+    if file_type == "md":
+        with open(file_path, "r", encoding="utf-8") as f:
+            return f.read()
+
     if file_type == "xlsx":
         import openpyxl
         wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)

@@ -66,6 +66,261 @@
             "key": "summary",
             "type": "string",
             "description": "工事概要（あれば文字列、なければnull）"
+          },
+          {
+            "key": "registration_number",
+            "type": "string",
+            "description": "登録番号"
+          },
+          {
+            "key": "registration_type",
+            "type": "string",
+            "description": "登録種別"
+          },
+          {
+            "key": "reception_date",
+            "type": "date",
+            "description": "受付年月日"
+          },
+          {
+            "key": "registration_date",
+            "type": "date",
+            "description": "登録年月日"
+          },
+          {
+            "key": "contract_start_date",
+            "type": "date",
+            "description": "契約工期開始日"
+          },
+          {
+            "key": "contract_end_date",
+            "type": "date",
+            "description": "契約工期終了日"
+          },
+          {
+            "key": "actual_start_date",
+            "type": "date",
+            "description": "実工期開始日"
+          },
+          {
+            "key": "actual_end_date",
+            "type": "date",
+            "description": "実工期終了日"
+          },
+          {
+            "key": "ordering_agency_name",
+            "type": "string",
+            "description": "発注機関名"
+          },
+          {
+            "key": "ordering_agency_address",
+            "type": "string",
+            "description": "発注機関住所"
+          },
+          {
+            "key": "ordering_agency_postal_code",
+            "type": "string",
+            "description": "発注機関郵便番号"
+          },
+          {
+            "key": "ordering_agency_tel",
+            "type": "string",
+            "description": "発注機関電話番号"
+          },
+          {
+            "key": "design_code",
+            "type": "string",
+            "description": "設計書コード"
+          },
+          {
+            "key": "contract_method",
+            "type": "string",
+            "description": "契約方式"
+          },
+          {
+            "key": "order_type",
+            "type": "string",
+            "description": "受注形態"
+          },
+          {
+            "key": "contractor_name_kana",
+            "type": "string",
+            "description": "請負者名称フリガナ"
+          },
+          {
+            "key": "contractor_id",
+            "type": "string",
+            "description": "企業ID"
+          },
+          {
+            "key": "construction_permit_number",
+            "type": "string",
+            "description": "建設業許可番号"
+          },
+          {
+            "key": "office_name",
+            "type": "string",
+            "description": "事業所名"
+          },
+          {
+            "key": "office_address",
+            "type": "string",
+            "description": "事業所住所"
+          },
+          {
+            "key": "office_postal_code",
+            "type": "string",
+            "description": "事業所郵便番号"
+          },
+          {
+            "key": "office_tel",
+            "type": "string",
+            "description": "事業所電話番号"
+          },
+          {
+            "key": "office_fax",
+            "type": "string",
+            "description": "事業所FAX番号"
+          },
+          {
+            "key": "public_project_field",
+            "type": "string",
+            "description": "公共事業の分野"
+          },
+          {
+            "key": "construction_permit_type",
+            "type": "string",
+            "description": "建設業許可業種"
+          },
+          {
+            "key": "bid_qualification_category",
+            "type": "string",
+            "description": "入札参加資格区分"
+          },
+          {
+            "key": "construction_types",
+            "type": "array",
+            "description": "工種リスト"
+          },
+          {
+            "key": "construction_methods",
+            "type": "array",
+            "description": "工法・型式リスト"
+          },
+          {
+            "key": "start_location_address",
+            "type": "string",
+            "description": "起点住所"
+          },
+          {
+            "key": "start_location_coordinates",
+            "type": "string",
+            "description": "起点座標"
+          },
+          {
+            "key": "end_location_address",
+            "type": "string",
+            "description": "終点住所"
+          },
+          {
+            "key": "end_location_coordinates",
+            "type": "string",
+            "description": "終点座標"
+          },
+          {
+            "key": "construction_area",
+            "type": "string",
+            "description": "施工地域"
+          },
+          {
+            "key": "night_work",
+            "type": "string",
+            "description": "夜間工事の有無"
+          },
+          {
+            "key": "traffic_regulation",
+            "type": "string",
+            "description": "交通規制の有無"
+          },
+          {
+            "key": "regulation_road_type",
+            "type": "string",
+            "description": "規制道路の種別"
+          },
+          {
+            "key": "road_traffic_volume",
+            "type": "string",
+            "description": "規制道路の交通量"
+          },
+          {
+            "key": "regulation_lanes",
+            "type": "string",
+            "description": "規制車線数"
+          },
+          {
+            "key": "traffic_control_method",
+            "type": "string",
+            "description": "交通の確保手段"
+          },
+          {
+            "key": "proximity_construction",
+            "type": "string",
+            "description": "近接施工の有無"
+          },
+          {
+            "key": "work_overview",
+            "type": "string",
+            "description": "工事概要"
+          },
+          {
+            "key": "target_route_name",
+            "type": "string",
+            "description": "対象水系・路線名称"
+          },
+          {
+            "key": "emergency_contract",
+            "type": "string",
+            "description": "緊急随契か否か"
+          },
+          {
+            "key": "disaster_recovery",
+            "type": "string",
+            "description": "災害復旧工事か否か"
+          },
+          {
+            "key": "ve_target",
+            "type": "string",
+            "description": "VE対象工事か否か"
+          },
+          {
+            "key": "iso_target",
+            "type": "string",
+            "description": "ISO対象工事か否か"
+          },
+          {
+            "key": "corins_registration_required",
+            "type": "string",
+            "description": "コリンズ登録義務の有無"
+          },
+          {
+            "key": "confirmation_date",
+            "type": "date",
+            "description": "実績内容確認年月日"
+          },
+          {
+            "key": "confirmation_department",
+            "type": "string",
+            "description": "実績内容確認担当者所属部署名"
+          },
+          {
+            "key": "confirmation_person",
+            "type": "string",
+            "description": "実績内容確認担当者氏名"
+          },
+          {
+            "key": "confirmation_email",
+            "type": "string",
+            "description": "実績内容確認担当者メールアドレス"
           }
         ]
       },

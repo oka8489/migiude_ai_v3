@@ -4,6 +4,7 @@ SQLite 管理モジュール
 """
 
 import json
+import shutil
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -259,13 +260,30 @@ def get_project_by_id(id: int) -> dict | None:
 
 
 def delete_project(id: int) -> bool:
-    """指定idの工事を削除する。成功したらTrue。"""
+    """指定idの工事を削除する。関連フォルダも削除。"""
     conn = get_connection()
     try:
+        # 先にfolder_pathを取得
+        cur = conn.execute(
+            "SELECT folder_path FROM projects WHERE id = ?", (id,)
+        )
+        row = cur.fetchone()
+        folder_path = row["folder_path"] if row else None
+
+        # 関連する設計図書も削除
         conn.execute("DELETE FROM design_documents WHERE project_id = ?", (id,))
+        # DB削除
         cur = conn.execute("DELETE FROM projects WHERE id = ?", (id,))
         conn.commit()
-        return cur.rowcount > 0
+        deleted = cur.rowcount > 0
+
+        # フォルダ削除
+        if deleted and folder_path:
+            full_path = DB_DIR.parent / folder_path
+            if full_path.exists():
+                shutil.rmtree(full_path)
+
+        return deleted
     finally:
         conn.close()
 
