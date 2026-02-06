@@ -68,13 +68,16 @@ def _generate_project_code(project_name: str) -> str:
     return f"{prefix}-{seq:02d}"
 
 
-def register_project_from_corins(file_path: str, project_type: str) -> dict:
+def register_project_from_corins(
+    file_path: str, project_type: str, save_to_neo4j: bool | None = None
+) -> dict:
     """
     コリンズファイル（PDF/MD）から工事を登録する。
 
     Args:
         file_path: コリンズPDFまたはMDのパス
         project_type: 'past' または 'current'
+        save_to_neo4j: Neo4jに保存するか。Noneの場合は設定に従う。Falseで明示的にスキップ。
 
     Returns:
         保存したデータ（idを含む、project_code, folder_pathを含む）
@@ -107,11 +110,13 @@ def register_project_from_corins(file_path: str, project_type: str) -> dict:
 
     saved = get_project_by_id(pk)
 
-    # Neo4jが選択されていれば保存
-    if saved and get_db_selection and save_project_to_neo4j:
-        db_sel = get_db_selection()
-        if db_sel.get("neo4j"):
+    # Neo4jに保存（save_to_neo4j が None の場合は設定に従う。False の場合はスキップ）
+    if saved and save_project_to_neo4j:
+        if save_to_neo4j is True:
             save_project_to_neo4j(saved)
+        elif save_to_neo4j is None and get_db_selection:
+            if get_db_selection().get("neo4j"):
+                save_project_to_neo4j(saved)
 
     return saved
 

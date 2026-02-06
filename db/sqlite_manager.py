@@ -61,6 +61,22 @@ def init_db() -> None:
         except sqlite3.OperationalError as e:
             if "duplicate column name" not in str(e).lower():
                 raise
+        try:
+            conn.execute(
+                "ALTER TABLE projects ADD COLUMN saved_to_neo4j INTEGER DEFAULT 0"
+            )
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
+        try:
+            conn.execute(
+                "ALTER TABLE projects ADD COLUMN saved_to_chroma INTEGER DEFAULT 0"
+            )
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
         conn.execute("""
             CREATE TABLE IF NOT EXISTS design_documents (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -255,6 +271,30 @@ def get_project_by_id(id: int) -> dict | None:
         cur = conn.execute("SELECT * FROM projects WHERE id = ?", (id,))
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def update_project_saved_to_db(project_id: int, saved_to_neo4j: bool | None = None, saved_to_chroma: bool | None = None) -> None:
+    """工事のDB保存フラグを更新する。"""
+    updates = []
+    params = []
+    if saved_to_neo4j is not None:
+        updates.append("saved_to_neo4j = ?")
+        params.append(1 if saved_to_neo4j else 0)
+    if saved_to_chroma is not None:
+        updates.append("saved_to_chroma = ?")
+        params.append(1 if saved_to_chroma else 0)
+    if not updates:
+        return
+    params.append(project_id)
+    conn = get_connection()
+    try:
+        conn.execute(
+            f"UPDATE projects SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        conn.commit()
     finally:
         conn.close()
 

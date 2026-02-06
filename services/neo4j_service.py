@@ -1,9 +1,14 @@
 """
-Neo4jサービス
-工事データをグラフDBに保存。関係性（発注者、場所、工種など）をノード・リレーションで表現。
+Neo4j サービス - 建設業ナレッジグラフ
+
+グラフ構造:
+  Project を中心に、発注者・受注者・技術者・工種・地域・材料・工法 等を
+  ノードとリレーションシップで接続。工事間の横断検索を可能にする。
 """
 
+import json
 import os
+import re
 
 from dotenv import load_dotenv
 
@@ -14,6 +19,7 @@ def _get_config():
     """Neo4j接続設定を取得。"""
     try:
         from services.config_service import get_neo4j_config
+
         cfg = get_neo4j_config()
         return (
             cfg.get("uri") or os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
@@ -26,6 +32,18 @@ def _get_config():
             os.environ.get("NEO4J_USER", "neo4j"),
             os.environ.get("NEO4J_PASSWORD", ""),
         )
+
+
+def _try_connect(uri: str, user: str, password: str):
+    """接続を試行。成功時はdriver、失敗時は(False, error_msg)。"""
+    try:
+        from neo4j import GraphDatabase
+
+        driver = GraphDatabase.driver(uri, auth=(user, password))
+        driver.verify_connectivity()
+        return driver
+    except Exception as e:
+        return (False, str(e))
 
 
 def _get_working_driver():
@@ -44,20 +62,9 @@ def _get_working_driver():
     return None
 
 
-def _get_driver():
-    """Neo4jドライバーを取得（後方互換）。"""
+def get_driver():
+    """Neo4jドライバーを取得。接続不可時はNone。"""
     return _get_working_driver()
-
-
-def _try_connect(uri: str, user: str, password: str):
-    """接続を試行。成功時はdriver、失敗時は(False, error_msg)。"""
-    try:
-        from neo4j import GraphDatabase
-        driver = GraphDatabase.driver(uri, auth=(user, password))
-        driver.verify_connectivity()
-        return driver
-    except Exception as e:
-        return (False, str(e))
 
 
 def is_neo4j_available() -> bool:
@@ -67,7 +74,6 @@ def is_neo4j_available() -> bool:
         return False
     result = _try_connect(uri, user, password)
     if isinstance(result, tuple):
-        # neo4j+s:// で失敗した場合、neo4j+ssc:// を試す（AuraDBのSSL証明書問題対策）
         if "neo4j+s://" in (uri or ""):
             alt_uri = uri.replace("neo4j+s://", "neo4j+ssc://")
             result2 = _try_connect(alt_uri, user, password)
@@ -89,7 +95,6 @@ def get_neo4j_connection_error() -> str | None:
         result.close()
         return None
     _, err = result
-    # neo4j+s:// で失敗した場合、neo4j+ssc:// を試す
     if "neo4j+s://" in (uri or ""):
         alt_uri = uri.replace("neo4j+s://", "neo4j+ssc://")
         result2 = _try_connect(alt_uri, user, password)
@@ -99,92 +104,273 @@ def get_neo4j_connection_error() -> str | None:
     return err
 
 
+def _split_csv(value) -> list:
+    """カンマ・読点・改行区切りの文字列、またはリストをリストに正規化。"""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    s = str(value).strip()
+    if not s:
+        return []
+    items = re.split(r"[,、\n]+", s)
+    return [item.strip() for item in items if item.strip()]
+
+
+def _extract_fiscal_year(start_date: str) -> str:
+    """開始日から年度を推定（4月始まり）"""
+    if not start_date:
+        return ""
+    start_date = str(start_date)
+    match = re.search(r"(\d{4})[/-](\d{1,2})", start_date)
+    if match:
+        year, month = int(match.group(1)), int(match.group(2))
+        if month < 4:
+            year -= 1
+        return f"{year}年度"
+    match = re.search(r"令和(\d+)年", start_date)
+    if match:
+        year = 2018 + int(match.group(1))
+        return f"{year}年度"
+    match = re.search(r"平成(\d+)年", start_date)
+    if match:
+        year = 1988 + int(match.group(1))
+        return f"{year}年度"
+    return ""
+
+
+def _extract_prefecture(location: str) -> str:
+    """住所から都道府県を抽出"""
+    if not location:
+        return ""
+    location = str(location)
+    match = re.search(r"(北海道|.{2,3}[都府県])", location)
+    return match.group(1) if match else ""
+
+
+def _normalize_project_data(project: dict) -> dict:
+    """project（SQLite形式）をparsed_data形式に正規化。"""
+    raw = project.get("raw_json")
+    if raw:
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+            data["project_name"] = data.get("project_name") or project.get("project_name", "")
+            data["project_code"] = project.get("project_code", "")
+            data["client_name"] = data.get("client_name") or project.get("client_name", "")
+            data["contractor_name"] = data.get("contractor_name") or project.get("contractor_name", "")
+            data["location"] = data.get("location") or project.get("location", "")
+            data["field"] = data.get("field") or project.get("field", "")
+            data["start_date"] = data.get("start_date") or project.get("start_date", "")
+            data["end_date"] = data.get("end_date") or project.get("end_date", "")
+            return data
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return project
+
+
 def save_project_to_neo4j(project: dict) -> bool:
     """
-    工事データをNeo4jに保存する。
-    ノード: Project, Client, Contractor, Location
-    リレーション: Project-[:発注者]->Client, Project-[:受注者]->Contractor, Project-[:場所]->Location
+    工事データをNeo4jに保存。コリンズデータからグラフを構築。
 
-    Args:
-        project: 工事データ（id, project_code, project_name, client_name, contractor_name, location等）
-
-    Returns:
-        成功したらTrue
+    作成するノード・リレーション:
+      Project, Client, Contractor, Engineer, WorkType,
+      Field, Region, FiscalYear + 各リレーションシップ
     """
     driver = _get_working_driver()
     if not driver:
         return False
 
+    data = _normalize_project_data(project)
+    project_id = project.get("id")
+    if not project_id:
+        return False
+
+    raw_json = json.dumps(data, ensure_ascii=False)
+
     try:
         with driver.session() as session:
-            pid = project.get("id")
-            code = project.get("project_code", "")
-            name = project.get("project_name", "")
-            project_type = project.get("project_type", "")
-            amount = project.get("contract_amount")
-            start_date = project.get("start_date")
-            end_date = project.get("end_date")
-            client_name = project.get("client_name", "")
-            contractor_name = project.get("contractor_name", "")
-            location = project.get("location", "")
-            field = project.get("field", "")
-
-            # Projectノード作成（MERGEで重複防止、idで一意）
-            session.run("""
+            # ---------- Project ノード ----------
+            session.run(
+                """
                 MERGE (p:Project {sqlite_id: $sqlite_id})
-                SET p.project_code = $project_code,
-                    p.project_name = $project_name,
-                    p.project_type = $project_type,
+                SET p.name = $name,
+                    p.corins_id = $corins_id,
                     p.contract_amount = $contract_amount,
                     p.start_date = $start_date,
                     p.end_date = $end_date,
-                    p.field = $field
-            """, sqlite_id=pid, project_code=code, project_name=name, project_type=project_type,
-                contract_amount=amount, start_date=start_date, end_date=end_date, field=field)
+                    p.location = $location,
+                    p.summary = $summary,
+                    p.raw_json = $raw_json,
+                    p.updated_at = datetime()
+                """,
+                sqlite_id=project_id,
+                name=data.get("project_name", ""),
+                corins_id=data.get("corins_id", ""),
+                contract_amount=data.get("contract_amount", ""),
+                start_date=data.get("start_date", ""),
+                end_date=data.get("end_date", ""),
+                location=data.get("location", ""),
+                summary=data.get("summary", ""),
+                raw_json=raw_json,
+            )
 
-            # 発注者ノードとリレーション
-            if client_name:
-                session.run("""
+            # ---------- Client（発注者）----------
+            client = data.get("client_name", "")
+            if client:
+                session.run(
+                    """
                     MERGE (c:Client {name: $name})
                     WITH c
-                    MATCH (p:Project {sqlite_id: $sqlite_id})
-                    MERGE (p)-[:発注者]->(c)
-                """, name=client_name, sqlite_id=pid)
+                    MATCH (p:Project {sqlite_id: $sid})
+                    MERGE (c)-[:ORDERED]->(p)
+                    """,
+                    name=client,
+                    sid=project_id,
+                )
+                pref = _extract_prefecture(data.get("location", ""))
+                if pref:
+                    session.run(
+                        """
+                        MERGE (c:Client {name: $client})
+                        MERGE (r:Region {name: $pref})
+                        MERGE (c)-[:MANAGES]->(r)
+                        """,
+                        client=client,
+                        pref=pref,
+                    )
 
-            # 受注者ノードとリレーション
-            if contractor_name:
-                session.run("""
+            # ---------- Contractor（受注者）----------
+            contractor = data.get("contractor_name", "")
+            if contractor:
+                session.run(
+                    """
                     MERGE (co:Contractor {name: $name})
                     WITH co
-                    MATCH (p:Project {sqlite_id: $sqlite_id})
-                    MERGE (p)-[:受注者]->(co)
-                """, name=contractor_name, sqlite_id=pid)
+                    MATCH (p:Project {sqlite_id: $sid})
+                    MERGE (co)-[:EXECUTED]->(p)
+                    """,
+                    name=contractor,
+                    sid=project_id,
+                )
 
-            # 場所ノードとリレーション
-            if location:
-                session.run("""
-                    MERGE (l:Location {name: $name})
-                    WITH l
-                    MATCH (p:Project {sqlite_id: $sqlite_id})
-                    MERGE (p)-[:場所]->(l)
-                """, name=location, sqlite_id=pid)
+            # ---------- Engineer（技術者）----------
+            engineers_raw = data.get("engineers", "")
+            engineers = _split_csv(engineers_raw)
+            if not engineers and isinstance(data.get("engineers"), list):
+                for e in data.get("engineers", []):
+                    if isinstance(e, dict):
+                        name = e.get("name") or e.get("role", "")
+                        if name:
+                            engineers.append(f"{e.get('role', '技術者')}:{name}")
+                    else:
+                        engineers.append(str(e))
+            for eng in engineers:
+                role = "技術者"
+                name = eng
+                if ":" in eng or "：" in eng:
+                    parts = re.split(r"[:：]", eng, maxsplit=1)
+                    role = parts[0].strip()
+                    name = parts[1].strip() if len(parts) > 1 else eng
+                if not name:
+                    continue
+                session.run(
+                    """
+                    MERGE (e:Engineer {name: $name})
+                    WITH e
+                    MATCH (p:Project {sqlite_id: $sid})
+                    MERGE (e)-[r:WORKED_ON]->(p)
+                    SET r.role = $role
+                    """,
+                    name=name,
+                    sid=project_id,
+                    role=role,
+                )
 
-            # 工種（WorkType）ノードとリレーション
-            work_types = project.get("work_types") or []
-            if isinstance(work_types, str):
-                try:
-                    import json
-                    work_types = json.loads(work_types)
-                except Exception:
-                    work_types = []
+            # ---------- WorkType（工種）----------
+            work_types_raw = data.get("work_types", "")
+            work_types = _split_csv(work_types_raw)
+            if not work_types and isinstance(data.get("work_types"), list):
+                work_types = [str(w) for w in data.get("work_types", []) if w]
             for wt in work_types:
                 if wt:
-                    session.run("""
+                    session.run(
+                        """
                         MERGE (w:WorkType {name: $name})
                         WITH w
-                        MATCH (p:Project {sqlite_id: $sqlite_id})
-                        MERGE (p)-[:工種]->(w)
-                    """, name=str(wt), sqlite_id=pid)
+                        MATCH (p:Project {sqlite_id: $sid})
+                        MERGE (p)-[:HAS_WORK_TYPE]->(w)
+                        """,
+                        name=wt,
+                        sid=project_id,
+                    )
+
+            # ---------- Field（分野）----------
+            field = data.get("field", "")
+            if field:
+                session.run(
+                    """
+                    MERGE (f:Field {name: $name})
+                    WITH f
+                    MATCH (p:Project {sqlite_id: $sid})
+                    MERGE (p)-[:IN_FIELD]->(f)
+                    """,
+                    name=field,
+                    sid=project_id,
+                )
+
+            # ---------- Region（地域）----------
+            location = data.get("location", "")
+            pref = _extract_prefecture(location)
+            if pref:
+                session.run(
+                    """
+                    MERGE (r:Region {name: $name})
+                    WITH r
+                    MATCH (p:Project {sqlite_id: $sid})
+                    MERGE (p)-[:LOCATED_IN]->(r)
+                    """,
+                    name=pref,
+                    sid=project_id,
+                )
+            if location:
+                city_match = re.search(r"[都府県](.*?[市区町村郡])", str(location))
+                if city_match:
+                    city = city_match.group(1)
+                    session.run(
+                        """
+                        MERGE (r2:Region {name: $city})
+                        SET r2.level = 'city'
+                        WITH r2
+                        MATCH (p:Project {sqlite_id: $sid})
+                        MERGE (p)-[:LOCATED_IN]->(r2)
+                        """,
+                        city=city,
+                        sid=project_id,
+                    )
+                    if pref:
+                        session.run(
+                            """
+                            MERGE (r1:Region {name: $pref})
+                            MERGE (r2:Region {name: $city})
+                            MERGE (r2)-[:PART_OF]->(r1)
+                            """,
+                            pref=pref,
+                            city=city,
+                        )
+
+            # ---------- FiscalYear（年度）----------
+            fy = _extract_fiscal_year(data.get("start_date", ""))
+            if fy:
+                session.run(
+                    """
+                    MERGE (fy:FiscalYear {name: $name})
+                    WITH fy
+                    MATCH (p:Project {sqlite_id: $sid})
+                    MERGE (p)-[:IN_FISCAL_YEAR]->(fy)
+                    """,
+                    name=fy,
+                    sid=project_id,
+                )
 
         return True
     except Exception:
@@ -193,17 +379,181 @@ def save_project_to_neo4j(project: dict) -> bool:
         driver.close()
 
 
-def delete_project_from_neo4j(sqlite_id: int) -> bool:
-    """Neo4jから工事ノードと関連リレーションを削除。"""
-    driver = _get_driver()
+def save_design_doc_to_neo4j(parsed_data: dict, project_id: int) -> bool:
+    """
+    設計図書データをNeo4jに保存。
+
+    作成するノード・リレーション:
+      DesignDocument, BudgetCategory, Material, Method, Regulation
+    """
+    driver = _get_working_driver()
     if not driver:
         return False
+
     try:
         with driver.session() as session:
-            session.run("""
-                MATCH (p:Project {sqlite_id: $sqlite_id})
-                DETACH DELETE p
-            """, sqlite_id=sqlite_id)
+            # Project が存在するか確認
+            result = session.run(
+                "MATCH (p:Project {sqlite_id: $pid}) RETURN p",
+                pid=project_id,
+            )
+            if not result.single():
+                return False
+
+            # ---------- DesignDocument ノード ----------
+            session.run(
+                """
+                MATCH (p:Project {sqlite_id: $pid})
+                CREATE (d:DesignDocument {
+                    document_title: $document_title,
+                    project_name: $project_name,
+                    project_code: $project_code,
+                    location: $location,
+                    executing_office: $executing_office,
+                    contract_days: $contract_days,
+                    quantities: $quantities,
+                    special_specs: $special_specs,
+                    raw_json: $raw_json,
+                    created_at: datetime()
+                })
+                MERGE (p)-[:HAS_DESIGN_DOC]->(d)
+                """,
+                pid=project_id,
+                document_title=parsed_data.get("document_title", ""),
+                project_name=parsed_data.get("project_name", ""),
+                project_code=parsed_data.get("project_code", ""),
+                location=parsed_data.get("location", ""),
+                executing_office=parsed_data.get("executing_office", ""),
+                contract_days=parsed_data.get("contract_days", ""),
+                quantities=(
+                    json.dumps(parsed_data.get("quantities"), ensure_ascii=False)
+                    if isinstance(parsed_data.get("quantities"), (list, dict))
+                    else str(parsed_data.get("quantities", ""))
+                ),
+                special_specs=parsed_data.get("special_specs", ""),
+                raw_json=json.dumps(parsed_data, ensure_ascii=False),
+            )
+
+            # ---------- BudgetCategory（予算区分）----------
+            budget = parsed_data.get("budget_category", "")
+            if budget:
+                session.run(
+                    """
+                    MERGE (b:BudgetCategory {name: $name})
+                    WITH b
+                    MATCH (p:Project {sqlite_id: $pid})
+                    MERGE (p)-[:HAS_BUDGET_CATEGORY]->(b)
+                    """,
+                    name=budget,
+                    pid=project_id,
+                )
+
+            # ---------- Material（使用材料）----------
+            quantities = parsed_data.get("quantities", "")
+            for mat in _split_csv(quantities):
+                mat_name = re.sub(
+                    r"[\d,.]+\s*[a-zA-Zｍ㎡㎥ｔ]*$", "", str(mat)
+                ).strip()
+                if mat_name:
+                    session.run(
+                        """
+                        MERGE (m:Material {name: $name})
+                        WITH m
+                        MATCH (p:Project {sqlite_id: $pid})
+                        MERGE (p)-[:USES_MATERIAL]->(m)
+                        """,
+                        name=mat_name,
+                        pid=project_id,
+                    )
+
+            # ---------- special_specs から工法・法規制を抽出 ----------
+            specs = parsed_data.get("special_specs", "")
+            if specs:
+                specs_str = (
+                    specs if isinstance(specs, str) else json.dumps(specs, ensure_ascii=False)
+                )
+                method_keywords = [
+                    "工法",
+                    "施工",
+                    "打設",
+                    "転圧",
+                    "注入",
+                    "吹付",
+                    "切削",
+                    "オーバーレイ",
+                    "プレキャスト",
+                ]
+                reg_keywords = [
+                    "法",
+                    "規則",
+                    "基準",
+                    "指針",
+                    "告示",
+                    "条例",
+                    "省令",
+                    "通達",
+                    "要領",
+                ]
+                for line in _split_csv(specs_str):
+                    if any(kw in line for kw in method_keywords):
+                        session.run(
+                            """
+                            MERGE (m:Method {name: $name})
+                            WITH m
+                            MATCH (p:Project {sqlite_id: $pid})
+                            MERGE (p)-[:USES_METHOD]->(m)
+                            """,
+                            name=line,
+                            pid=project_id,
+                        )
+                    if any(kw in line for kw in reg_keywords):
+                        session.run(
+                            """
+                            MERGE (reg:Regulation {name: $name})
+                            WITH reg
+                            MATCH (p:Project {sqlite_id: $pid})
+                            MERGE (p)-[:REQUIRES_REGULATION]->(reg)
+                            """,
+                            name=line,
+                            pid=project_id,
+                        )
+
+        return True
+    except Exception:
+        return False
+    finally:
+        driver.close()
+
+
+def delete_project_from_neo4j(project_id: int) -> bool:
+    """SQLite IDに紐づくProjectノードと関連DesignDocumentを削除。"""
+    driver = _get_working_driver()
+    if not driver:
+        return False
+
+    try:
+        with driver.session() as session:
+            session.run(
+                """
+                MATCH (p:Project {sqlite_id: $sid})-[:HAS_DESIGN_DOC]->(d:DesignDocument)
+                DETACH DELETE d
+                """,
+                sid=project_id,
+            )
+            session.run(
+                "MATCH (p:Project {sqlite_id: $sid}) DETACH DELETE p",
+                sid=project_id,
+            )
+            session.run(
+                """
+                MATCH (n)
+                WHERE NOT (n)--()
+                AND (n:Material OR n:Method OR n:Regulation OR n:WorkType
+                     OR n:BudgetCategory OR n:Field OR n:Region OR n:FiscalYear
+                     OR n:Client OR n:Contractor OR n:Engineer)
+                DELETE n
+                """
+            )
         return True
     except Exception:
         return False
