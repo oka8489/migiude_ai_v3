@@ -7,7 +7,7 @@ import re
 import shutil
 from pathlib import Path
 
-from parsers.corins_parser import parse_corins_pdf
+from parsers.corins_parser import parse_corins_file
 from db.sqlite_manager import init_db, save_project, get_project_by_id, get_project_count_by_year_prefix
 
 try:
@@ -68,18 +68,18 @@ def _generate_project_code(project_name: str) -> str:
     return f"{prefix}-{seq:02d}"
 
 
-def register_project_from_corins(pdf_path: str, project_type: str) -> dict:
+def register_project_from_corins(file_path: str, project_type: str) -> dict:
     """
-    コリンズPDFから工事を登録する。
+    コリンズファイル（PDF/MD）から工事を登録する。
 
     Args:
-        pdf_path: コリンズPDFのパス
+        file_path: コリンズPDFまたはMDのパス
         project_type: 'past' または 'current'
 
     Returns:
         保存したデータ（idを含む、project_code, folder_pathを含む）
     """
-    data = parse_corins_pdf(pdf_path)
+    data = parse_corins_file(file_path)
 
     project_name = data.get("project_name") or "未命名"
     project_code = _generate_project_code(project_name)
@@ -92,8 +92,10 @@ def register_project_from_corins(pdf_path: str, project_type: str) -> dict:
     else:
         folder = DATA_DIR / "新規工事" / folder_name
     folder.mkdir(parents=True, exist_ok=True)
-    dest_pdf = folder / "コリンズ.pdf"
-    shutil.copy2(pdf_path, dest_pdf)
+    ext = Path(file_path).suffix.lower()
+    dest_name = "コリンズ.pdf" if ext == ".pdf" else "コリンズ.md"
+    dest_file = folder / dest_name
+    shutil.copy2(file_path, dest_file)
     folder_path = str(folder.relative_to(PROJECT_ROOT)).replace("\\", "/")
     data["folder_path"] = folder_path
 

@@ -25,20 +25,28 @@ except ImportError:
 CORINS_SOURCE_NAME = "コリンズ"
 
 
-def extract_text_from_pdf(pdf_path: str) -> str:
-    """PDFからテキストを抽出する。"""
-    path = Path(pdf_path)
+def extract_text_from_file(file_path: str) -> str:
+    """ファイルからテキストを抽出する。PDF・MDに対応。"""
+    path = Path(file_path)
     if not path.exists():
-        raise FileNotFoundError(f"PDFが見つかりません: {pdf_path}")
+        raise FileNotFoundError(f"ファイルが見つかりません: {file_path}")
 
-    text_parts = []
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            t = page.extract_text()
-            if t:
-                text_parts.append(t)
+    ext = path.suffix.lower()
 
-    return "\n\n".join(text_parts) if text_parts else ""
+    if ext == ".pdf":
+        text_parts = []
+        with pdfplumber.open(file_path) as pdf:
+            for page in pdf.pages:
+                t = page.extract_text()
+                if t:
+                    text_parts.append(t)
+        return "\n\n".join(text_parts) if text_parts else ""
+
+    if ext == ".md":
+        with open(file_path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    raise ValueError(f"未対応のファイル形式: {ext}（PDF・MDに対応）")
 
 
 def _build_schema_prompt(schema: list) -> str:
@@ -112,12 +120,12 @@ def extract_with_claude(text: str, schema: list | None = None, parser_config: di
     return json.loads(raw)
 
 
-def parse_corins_pdf(pdf_path: str) -> dict:
+def parse_corins_file(file_path: str) -> dict:
     """
-    コリンズPDFを解析し、登録番号・件名・請負金額などの情報をJSON形式で返す。
+    コリンズファイル（PDF/MD）を解析し、登録番号・件名・請負金額などの情報をJSON形式で返す。
 
     Args:
-        pdf_path: PDFファイルのパス
+        file_path: PDFまたはMDファイルのパス
 
     Returns:
         抽出した情報の辞書。キー: corins_id, project_name, contract_amount,
@@ -125,11 +133,11 @@ def parse_corins_pdf(pdf_path: str) -> dict:
         field, work_types, engineers, summary
 
     Raises:
-        FileNotFoundError: PDFが存在しない場合
+        FileNotFoundError: ファイルが存在しない場合
         ValueError: ANTHROPIC_API_KEYが未設定、またはClaudeの応答が不正な場合
     """
-    text = extract_text_from_pdf(pdf_path)
+    text = extract_text_from_file(file_path)
     if not text or not text.strip():
-        raise ValueError(f"PDFからテキストを抽出できませんでした: {pdf_path}")
+        raise ValueError(f"ファイルからテキストを抽出できませんでした: {file_path}")
 
     return extract_with_claude(text)
