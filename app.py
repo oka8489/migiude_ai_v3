@@ -20,9 +20,9 @@ init_db()
 # ========== 工事登録 ==========
 st.markdown("# 工事登録")
 
-tab_past, tab_current = st.tabs(["過去工事", "稼働中の工事"])
+tab_current, tab_past, tab_settings = st.tabs(["稼働中の工事", "過去工事", "設定"])
 
-for project_type, tab in [("past", tab_past), ("current", tab_current)]:
+for project_type, tab in [("current", tab_current), ("past", tab_past)]:
     with tab:
         st.markdown("### コリンズPDFをアップロード")
         uploaded_file = st.file_uploader(
@@ -82,3 +82,6 @@ for project_type, tab in [("past", tab_past), ("current", tab_current)]:
                         if (get_db_selection() or {}).get("neo4j"):
                             delete_project_from_neo4j(p["id"])
                         st.rerun()
+
+with tab_settings:
+    st.markdown("### 設定")
