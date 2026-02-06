@@ -1,0 +1,153 @@
+{
+  "data_sources": [
+    {
+      "id": "corins-default",
+      "name": "コリンズ",
+      "file_type": "pdf",
+      "description": "公共事業の発注情報（工事発注情報）",
+      "schema": {
+        "fields": [
+          {
+            "key": "corins_id",
+            "type": "string",
+            "description": "登録番号"
+          },
+          {
+            "key": "project_name",
+            "type": "string",
+            "description": "件名"
+          },
+          {
+            "key": "contract_amount",
+            "type": "number",
+            "description": "請負金額（数値のみ。カンマや円は除く。不明ならnull）"
+          },
+          {
+            "key": "start_date",
+            "type": "date",
+            "description": "工期開始（YYYY-MM-DD形式。不明ならnull）"
+          },
+          {
+            "key": "end_date",
+            "type": "date",
+            "description": "工期終了（YYYY-MM-DD形式。不明ならnull）"
+          },
+          {
+            "key": "location",
+            "type": "string",
+            "description": "施工場所"
+          },
+          {
+            "key": "client_name",
+            "type": "string",
+            "description": "発注機関名"
+          },
+          {
+            "key": "contractor_name",
+            "type": "string",
+            "description": "請負者名称"
+          },
+          {
+            "key": "field",
+            "type": "string",
+            "description": "公共事業の分野"
+          },
+          {
+            "key": "work_types",
+            "type": "array",
+            "description": "工種（文字列の配列）"
+          },
+          {
+            "key": "engineers",
+            "type": "array",
+            "description": "技術者（配列。各要素は {\"name\": \"氏名\", \"role\": \"役割\"} の形式）"
+          },
+          {
+            "key": "summary",
+            "type": "string",
+            "description": "工事概要（あれば文字列、なければnull）"
+          }
+        ]
+      },
+      "parser": {
+        "model": "claude-sonnet-4-20250514",
+        "max_tokens": 4096
+      },
+      "db_selection": {
+        "sqlite": true,
+        "chroma": false,
+        "neo4j": false,
+        "sqlite_mode": "both"
+      }
+    },
+    {
+      "id": "design-doc-default",
+      "name": "設計図書",
+      "file_type": "pdf",
+      "description": "設計図書・特記仕様書・設計図面など",
+      "schema": {
+        "fields": [
+          {
+            "key": "document_title",
+            "type": "string",
+            "description": "図書名・タイトル"
+          },
+          {
+            "key": "project_name",
+            "type": "string",
+            "description": "工事名"
+          },
+          {
+            "key": "project_code",
+            "type": "string",
+            "description": "工事番号"
+          },
+          {
+            "key": "location",
+            "type": "string",
+            "description": "工事場所"
+          },
+          {
+            "key": "executing_office",
+            "type": "string",
+            "description": "執行課所"
+          },
+          {
+            "key": "contract_days",
+            "type": "number",
+            "description": "工期（日数）"
+          },
+          {
+            "key": "budget_category",
+            "type": "string",
+            "description": "予算科目"
+          },
+          {
+            "key": "quantities",
+            "type": "array",
+            "description": "数量（項目・数量・単位の配列）"
+          },
+          {
+            "key": "special_specs",
+            "type": "string",
+            "description": "特記仕様書の要点"
+          }
+        ]
+      },
+      "parser": {
+        "model": "claude-sonnet-4-20250514",
+        "max_tokens": 4096
+      },
+      "db_selection": {
+        "sqlite": true,
+        "chroma": false,
+        "neo4j": false,
+        "sqlite_mode": "both"
+      }
+    }
+  ],
+  "parser": {
+    "model": "claude-sonnet-4-20250514",
+    "max_tokens": 4096
+  }
+}

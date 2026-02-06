@@ -1,0 +1,25 @@
+# 秘密情報
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# DB（ローカルデータ）
+*.db
+*.db-journal
+
+# データフォルダ（工事データは公開しない）
+data/
+
+# OS・エディタ
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
