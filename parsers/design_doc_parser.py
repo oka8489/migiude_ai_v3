@@ -31,16 +31,27 @@ DEFAULT_DESIGN_SCHEMA = [
 
 def extract_text_from_pdf(pdf_path: str) -> str:
     """PDFからテキストを抽出する。"""
+    parts = extract_text_from_pdf_by_page(pdf_path)
+    return "\n\n".join(t for _, t in parts) if parts else ""
+
+
+def extract_text_from_pdf_by_page(pdf_path: str) -> list[tuple[int, str]]:
+    """
+    PDFからページごとにテキストを抽出する。
+
+    Returns:
+        [(page_number, text), ...]  page_numberは1始まり
+    """
     path = Path(pdf_path)
     if not path.exists():
         raise FileNotFoundError(f"PDFが見つかりません: {pdf_path}")
-    text_parts = []
+    result = []
     with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
+        for i, page in enumerate(pdf.pages):
+            page_num = i + 1
             t = page.extract_text()
-            if t:
-                text_parts.append(t)
-    return "\n\n".join(text_parts) if text_parts else ""
+            result.append((page_num, t or ""))
+    return result
 
 
 def _build_schema_prompt(schema: list) -> str:

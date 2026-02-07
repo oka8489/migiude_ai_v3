@@ -148,6 +148,31 @@ def _extract_prefecture(location: str) -> str:
     return match.group(1) if match else ""
 
 
+def _extract_region_parts(location: str) -> list[str]:
+    """
+    住所から地域を県・市（区町村）で別々に抽出する。
+    「大分県日田市」→ ["大分県", "日田市"] のように1ノードにせず別々に返す。
+    """
+    if not location:
+        return []
+    loc = str(location).strip()
+    parts = []
+
+    # 都道府県
+    pref_match = re.search(r"(北海道|.{2,3}[都府県])", loc)
+    if pref_match:
+        parts.append(pref_match.group(1))
+
+    # 市区町村郡（県の後の部分）
+    city_match = re.search(r"[都府県]([^、,，\s]*(?:市|区|町|村|郡))", loc)
+    if city_match:
+        city = city_match.group(1).strip()
+        if city and (not pref_match or city != pref_match.group(1)):
+            parts.append(city)
+
+    return parts
+
+
 def _normalize_project_data(project: dict) -> dict:
     """project（SQLite形式）をparsed_data形式に正規化。"""
     raw = project.get("raw_json")
@@ -172,9 +197,13 @@ def save_project_to_neo4j(project: dict) -> bool:
     """
     工事データをNeo4jに保存。コリンズデータからグラフを構築。
 
-    作成するノード・リレーション:
-      Project, Client, Contractor, Engineer, WorkType,
-      Field, Region, FiscalYear + 各リレーションシップ
+    リレーション（Project始点で統一）:
+      ORDERED_BY→Client, CONTRACTED_BY→Contractor, CONTRACTED_BY→ContractMethod,
+      HAS_ENGINEER→Engineer, IN_FIELD→Field, IN_FISCAL_YEAR→FiscalYear,
+      HAS_WORK_TYPE→WorkType, USES_METHOD→ConstructionMethod,
+      LOCATED_IN→Region（県・市を別ノード）, ON_ROUTE→Route,
+      IN_AREA_TYPE→ConstructionArea, IN_BID_CATEGORY→BidCategory,
+      REQUIRES_PERMIT→PermitType
     """
     driver = _get_working_driver()
     if not driver:
@@ -194,6 +223,7 @@ def save_project_to_neo4j(project: dict) -> bool:
                 """
                 MERGE (p:Project {sqlite_id: $sqlite_id})
                 SET p.name = $name,
+                    p.project_code = $project_code,
                     p.corins_id = $corins_id,
                     p.contract_amount = $contract_amount,
                     p.start_date = $start_date,
@@ -205,6 +235,7 @@ def save_project_to_neo4j(project: dict) -> bool:
                 """,
                 sqlite_id=project_id,
                 name=data.get("project_name", ""),
+                project_code=data.get("project_code", "") or project.get("project_code", ""),
                 corins_id=data.get("corins_id", ""),
                 contract_amount=data.get("contract_amount", ""),
                 start_date=data.get("start_date", ""),
@@ -214,7 +245,7 @@ def save_project_to_neo4j(project: dict) -> bool:
                 raw_json=raw_json,
             )
 
-            # ---------- Client（発注者）----------
+            # ---------- Client（発注者）ORDERED_BY: Project → Client ----------
             client = data.get("client_name", "")
             if client:
                 session.run(
@@ -222,7 +253,7 @@ def save_project_to_neo4j(project: dict) -> bool:
                     MERGE (c:Client {name: $name})
                     WITH c
                     MATCH (p:Project {sqlite_id: $sid})
-                    MERGE (c)-[:ORDERED]->(p)
+                    MERGE (p)-[:ORDERED_BY]->(c)
                     """,
                     name=client,
                     sid=project_id,
@@ -239,7 +270,7 @@ def save_project_to_neo4j(project: dict) -> bool:
                         pref=pref,
                     )
 
-            # ---------- Contractor（受注者）----------
+            # ---------- Contractor（受注者）CONTRACTED_BY: Project → Contractor ----------
             contractor = data.get("contractor_name", "")
             if contractor:
                 session.run(
@@ -247,13 +278,13 @@ def save_project_to_neo4j(project: dict) -> bool:
                     MERGE (co:Contractor {name: $name})
                     WITH co
                     MATCH (p:Project {sqlite_id: $sid})
-                    MERGE (co)-[:EXECUTED]->(p)
+                    MERGE (p)-[:CONTRACTED_BY]->(co)
                     """,
                     name=contractor,
                     sid=project_id,
                 )
 
-            # ---------- Engineer（技術者）----------
+            # ---------- Engineer（技術者）HAS_ENGINEER: Project → Engineer ----------
             engineers = data.get("engineers", [])
             if isinstance(engineers, str):
                 engineers = _split_csv(engineers)
@@ -280,7 +311,7 @@ def save_project_to_neo4j(project: dict) -> bool:
                     MERGE (e:Engineer {name: $name})
                     WITH e
                     MATCH (p:Project {sqlite_id: $sid})
-                    MERGE (e)-[r:WORKED_ON {role: $role}]->(p)
+                    MERGE (p)-[:HAS_ENGINEER {role: $role}]->(e)
                     """,
                     name=name,
                     sid=project_id,
@@ -319,45 +350,32 @@ def save_project_to_neo4j(project: dict) -> bool:
                     sid=project_id,
                 )
 
-            # ---------- Region（地域）----------
+            # ---------- Region（地域）県と市を別ノードで作成 LOCATED_IN: Project → Region ----------
             location = data.get("location", "")
-            pref = _extract_prefecture(location)
-            if pref:
-                session.run(
-                    """
-                    MERGE (r:Region {name: $name})
-                    WITH r
-                    MATCH (p:Project {sqlite_id: $sid})
-                    MERGE (p)-[:LOCATED_IN]->(r)
-                    """,
-                    name=pref,
-                    sid=project_id,
-                )
-            if location:
-                city_match = re.search(r"[都府県](.*?[市区町村郡])", str(location))
-                if city_match:
-                    city = city_match.group(1)
+            region_parts = _extract_region_parts(location)
+            for region_name in region_parts:
+                if region_name:
                     session.run(
                         """
-                        MERGE (r2:Region {name: $city})
-                        SET r2.level = 'city'
-                        WITH r2
+                        MERGE (r:Region {name: $name})
+                        WITH r
                         MATCH (p:Project {sqlite_id: $sid})
-                        MERGE (p)-[:LOCATED_IN]->(r2)
+                        MERGE (p)-[:LOCATED_IN]->(r)
                         """,
-                        city=city,
+                        name=region_name,
                         sid=project_id,
                     )
-                    if pref:
-                        session.run(
-                            """
-                            MERGE (r1:Region {name: $pref})
-                            MERGE (r2:Region {name: $city})
-                            MERGE (r2)-[:PART_OF]->(r1)
-                            """,
-                            pref=pref,
-                            city=city,
-                        )
+            # 市が県に含まれる関係を設定（県と市が両方ある場合）
+            if len(region_parts) >= 2:
+                session.run(
+                    """
+                    MERGE (r_pref:Region {name: $pref})
+                    MERGE (r_city:Region {name: $city})
+                    MERGE (r_city)-[:PART_OF]->(r_pref)
+                    """,
+                    pref=region_parts[0],
+                    city=region_parts[1],
+                )
 
             # ---------- FiscalYear（年度）----------
             fy = _extract_fiscal_year(data.get("start_date", ""))
@@ -483,9 +501,11 @@ def save_project_to_neo4j(project: dict) -> bool:
                 traffic_control_method=data.get("traffic_control_method", ""),
                 construction_area=data.get("construction_area", ""),
                 order_type=data.get("order_type", ""),
-                coordinates=data.get("coordinates", "")
-                or data.get("start_location_coordinates", "")
-                or data.get("end_location_coordinates", ""),
+                coordinates=(
+                    data.get("coordinates", "")
+                    or data.get("start_location_coordinates", "")
+                    or data.get("end_location_coordinates", "")
+                ),
                 permit_number=data.get("construction_permit_number", ""),
             )
 
