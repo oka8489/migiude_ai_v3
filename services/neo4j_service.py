@@ -16,15 +16,15 @@ load_dotenv()
 
 
 def _get_config():
-    """Neo4j接続設定を取得。"""
+    """Neo4j接続設定を取得。.env を優先し、未設定時は config にフォールバック。"""
     try:
         from services.config_service import get_neo4j_config
 
         cfg = get_neo4j_config()
         return (
-            cfg.get("uri") or os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
-            cfg.get("user") or os.environ.get("NEO4J_USER", "neo4j"),
-            cfg.get("password") or os.environ.get("NEO4J_PASSWORD", ""),
+            os.environ.get("NEO4J_URI") or cfg.get("uri") or "bolt://localhost:7687",
+            os.environ.get("NEO4J_USER") or cfg.get("user") or "neo4j",
+            os.environ.get("NEO4J_PASSWORD") or cfg.get("password") or "",
         )
     except ImportError:
         return (
@@ -254,32 +254,33 @@ def save_project_to_neo4j(project: dict) -> bool:
                 )
 
             # ---------- Engineer（技術者）----------
-            engineers_raw = data.get("engineers", "")
-            engineers = _split_csv(engineers_raw)
-            if not engineers and isinstance(data.get("engineers"), list):
-                for e in data.get("engineers", []):
-                    if isinstance(e, dict):
-                        name = e.get("name") or e.get("role", "")
-                        if name:
-                            engineers.append(f"{e.get('role', '技術者')}:{name}")
-                    else:
-                        engineers.append(str(e))
+            engineers = data.get("engineers", [])
+            if isinstance(engineers, str):
+                engineers = _split_csv(engineers)
+
             for eng in engineers:
-                role = "技術者"
-                name = eng
-                if ":" in eng or "：" in eng:
-                    parts = re.split(r"[:：]", eng, maxsplit=1)
-                    role = parts[0].strip()
-                    name = parts[1].strip() if len(parts) > 1 else eng
+                if isinstance(eng, dict):
+                    name = eng.get("name", "")
+                    role = eng.get("role", "技術者")
+                elif isinstance(eng, str):
+                    role = "技術者"
+                    name = eng
+                    if ":" in eng or "：" in eng:
+                        parts = re.split(r"[:：]", eng, maxsplit=1)
+                        role = parts[0].strip()
+                        name = parts[1].strip()
+                else:
+                    continue
+
                 if not name:
                     continue
+
                 session.run(
                     """
                     MERGE (e:Engineer {name: $name})
                     WITH e
                     MATCH (p:Project {sqlite_id: $sid})
-                    MERGE (e)-[r:WORKED_ON]->(p)
-                    SET r.role = $role
+                    MERGE (e)-[r:WORKED_ON {role: $role}]->(p)
                     """,
                     name=name,
                     sid=project_id,
@@ -370,6 +371,158 @@ def save_project_to_neo4j(project: dict) -> bool:
                     """,
                     name=fy,
                     sid=project_id,
+                )
+
+            # ---------- Route（路線）----------
+            route = data.get("target_route_name", "")
+            if route:
+                session.run(
+                    """
+                    MERGE (rt:Route {name: $name})
+                    WITH rt
+                    MATCH (p:Project {sqlite_id: $sid})
+                    MERGE (p)-[:ON_ROUTE]->(rt)
+                    """,
+                    name=route,
+                    sid=project_id,
+                )
+
+            # ---------- ContractMethod（契約方式）----------
+            method = data.get("contract_method", "")
+            if method:
+                session.run(
+                    """
+                    MERGE (cm:ContractMethod {name: $name})
+                    WITH cm
+                    MATCH (p:Project {sqlite_id: $sid})
+                    MERGE (p)-[:CONTRACTED_BY]->(cm)
+                    """,
+                    name=method,
+                    sid=project_id,
+                )
+
+            # ---------- ConstructionPermitType（許可業種）----------
+            permit_type = data.get("construction_permit_type", "")
+            if permit_type:
+                session.run(
+                    """
+                    MERGE (cp:PermitType {name: $name})
+                    WITH cp
+                    MATCH (p:Project {sqlite_id: $sid})
+                    MERGE (p)-[:REQUIRES_PERMIT]->(cp)
+                    """,
+                    name=permit_type,
+                    sid=project_id,
+                )
+
+            # ---------- BidCategory（入札区分）----------
+            bid_cat = data.get("bid_qualification_category", "")
+            if bid_cat:
+                session.run(
+                    """
+                    MERGE (bc:BidCategory {name: $name})
+                    WITH bc
+                    MATCH (p:Project {sqlite_id: $sid})
+                    MERGE (p)-[:IN_BID_CATEGORY]->(bc)
+                    """,
+                    name=bid_cat,
+                    sid=project_id,
+                )
+
+            # ---------- ConstructionArea（施工地域区分）----------
+            area = data.get("construction_area", "")
+            if area:
+                session.run(
+                    """
+                    MERGE (ca:ConstructionArea {name: $name})
+                    WITH ca
+                    MATCH (p:Project {sqlite_id: $sid})
+                    MERGE (p)-[:IN_AREA_TYPE]->(ca)
+                    """,
+                    name=area,
+                    sid=project_id,
+                )
+
+            # ---------- ConstructionMethod（工法）----------
+            methods = data.get("construction_methods", [])
+            if isinstance(methods, str):
+                methods = _split_csv(methods)
+            elif not isinstance(methods, list):
+                methods = []
+            for m in methods:
+                m_name = m if isinstance(m, str) else str(m)
+                if m_name.strip():
+                    session.run(
+                        """
+                        MERGE (cm:ConstructionMethod {name: $name})
+                        WITH cm
+                        MATCH (p:Project {sqlite_id: $sid})
+                        MERGE (p)-[:USES_METHOD]->(cm)
+                        """,
+                        name=m_name.strip(),
+                        sid=project_id,
+                    )
+
+            # ---------- Project プロパティに追加情報をSET ----------
+            session.run(
+                """
+                MATCH (p:Project {sqlite_id: $sid})
+                SET p.night_work = $night_work,
+                    p.traffic_regulation = $traffic_regulation,
+                    p.road_traffic_volume = $road_traffic_volume,
+                    p.traffic_control_method = $traffic_control_method,
+                    p.construction_area = $construction_area,
+                    p.order_type = $order_type,
+                    p.coordinates = $coordinates,
+                    p.construction_permit_number = $permit_number
+                """,
+                sid=project_id,
+                night_work=data.get("night_work", ""),
+                traffic_regulation=data.get("traffic_regulation", ""),
+                road_traffic_volume=data.get("road_traffic_volume", ""),
+                traffic_control_method=data.get("traffic_control_method", ""),
+                construction_area=data.get("construction_area", ""),
+                order_type=data.get("order_type", ""),
+                coordinates=data.get("coordinates", "")
+                or data.get("start_location_coordinates", "")
+                or data.get("end_location_coordinates", ""),
+                permit_number=data.get("construction_permit_number", ""),
+            )
+
+            # ---------- Contractor にも詳細プロパティ追加 ----------
+            contractor = data.get("contractor_name", "")
+            if contractor:
+                session.run(
+                    """
+                    MATCH (co:Contractor {name: $name})
+                    SET co.contractor_id = $cid,
+                        co.address = $address,
+                        co.tel = $tel,
+                        co.fax = $fax,
+                        co.permit_number = $permit
+                    """,
+                    name=contractor,
+                    cid=data.get("contractor_id", ""),
+                    address=data.get("office_address", ""),
+                    tel=data.get("office_tel", ""),
+                    fax=data.get("office_fax", ""),
+                    permit=data.get("construction_permit_number", ""),
+                )
+
+            # ---------- Client にも詳細プロパティ追加 ----------
+            client = data.get("client_name", "")
+            if client:
+                session.run(
+                    """
+                    MATCH (c:Client {name: $name})
+                    SET c.address = $address,
+                        c.tel = $tel,
+                        c.postal_code = $postal
+                    """,
+                    name=client,
+                    address=data.get("ordering_agency_address", ""),
+                    tel=data.get("ordering_agency_tel", ""),
+                    postal=data.get("ordering_agency_postal_code", ""),
                 )
 
         return True
@@ -550,7 +703,9 @@ def delete_project_from_neo4j(project_id: int) -> bool:
                 WHERE NOT (n)--()
                 AND (n:Material OR n:Method OR n:Regulation OR n:WorkType
                      OR n:BudgetCategory OR n:Field OR n:Region OR n:FiscalYear
-                     OR n:Client OR n:Contractor OR n:Engineer)
+                     OR n:Client OR n:Contractor OR n:Engineer
+                     OR n:Route OR n:ContractMethod OR n:PermitType
+                     OR n:BidCategory OR n:ConstructionArea OR n:ConstructionMethod)
                 DELETE n
                 """
             )
