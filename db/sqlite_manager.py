@@ -105,26 +105,12 @@ def init_db() -> None:
             )
         """)
         conn.commit()
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS design_documents (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_id INTEGER,
-                document_title TEXT,
-                project_name TEXT,
-                project_code TEXT,
-                location TEXT,
-                executing_office TEXT,
-                contract_days INTEGER,
-                budget_category TEXT,
-                quantities TEXT,
-                special_specs TEXT,
-                raw_json TEXT,
-                file_path TEXT,
-                created_at TEXT,
-                FOREIGN KEY (project_id) REFERENCES projects(id)
-            )
-        """)
-        conn.commit()
+        # design_documents テーブルは不要（設計図書はChromaのみに保存）
+        try:
+            conn.execute("DROP TABLE IF EXISTS design_documents")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
     finally:
         conn.close()
 
@@ -345,8 +331,6 @@ def delete_project(id: int) -> bool:
         row = cur.fetchone()
         folder_path = row["folder_path"] if row else None
 
-        # 関連する設計図書も削除
-        conn.execute("DELETE FROM design_documents WHERE project_id = ?", (id,))
         # DB削除
         cur = conn.execute("DELETE FROM projects WHERE id = ?", (id,))
         conn.commit()
@@ -363,72 +347,3 @@ def delete_project(id: int) -> bool:
         conn.close()
 
 
-def save_design_document(data: dict, project_id: int | None = None) -> int:
-    """設計図書データを1件保存する。"""
-    raw_json = json.dumps(data, ensure_ascii=False)
-    quantities_str = json.dumps(data.get("quantities") or [], ensure_ascii=False)
-    created_at = datetime.now().isoformat()
-    conn = get_connection()
-    try:
-        cur = conn.execute(
-            """
-            INSERT INTO design_documents (
-                project_id, document_title, project_name, project_code,
-                location, executing_office, contract_days, budget_category,
-                quantities, special_specs, raw_json, file_path, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                project_id,
-                data.get("document_title"),
-                data.get("project_name"),
-                data.get("project_code"),
-                data.get("location"),
-                data.get("executing_office"),
-                data.get("contract_days"),
-                data.get("budget_category"),
-                quantities_str,
-                data.get("special_specs"),
-                raw_json,
-                data.get("file_path"),
-                created_at,
-            ),
-        )
-        conn.commit()
-        return cur.lastrowid
-    finally:
-        conn.close()
-
-
-def get_design_documents_by_project(project_id: int) -> list[dict]:
-    """指定工事の設計図書を全件取得する。"""
-    conn = get_connection()
-    try:
-        cur = conn.execute(
-            "SELECT * FROM design_documents WHERE project_id = ? ORDER BY id",
-            (project_id,),
-        )
-        return [dict(row) for row in cur.fetchall()]
-    finally:
-        conn.close()
-
-
-def get_all_design_documents() -> list[dict]:
-    """全設計図書を取得する。"""
-    conn = get_connection()
-    try:
-        cur = conn.execute("SELECT * FROM design_documents ORDER BY id")
-        return [dict(row) for row in cur.fetchall()]
-    finally:
-        conn.close()
-
-
-def delete_design_document(id: int) -> bool:
-    """設計図書を1件削除する。"""
-    conn = get_connection()
-    try:
-        cur = conn.execute("DELETE FROM design_documents WHERE id = ?", (id,))
-        conn.commit()
-        return cur.rowcount > 0
-    finally:
-        conn.close()

@@ -84,6 +84,10 @@ def register_project_from_corins(
     """
     data = parse_corins_file(file_path)
 
+    # 解析結果が空の場合は明示的にエラー
+    if not data or not isinstance(data, dict):
+        raise ValueError("コリンズPDFの解析結果が空です。PDFの内容を確認してください。")
+
     project_name = data.get("project_name") or "未命名"
     project_code = _generate_project_code(project_name)
     data["project_code"] = project_code
