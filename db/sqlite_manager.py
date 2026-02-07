@@ -4,19 +4,39 @@ SQLite 管理モジュール
 """
 
 import json
+import os
 import shutil
-import sqlite3
-from datetime import datetime
+
 from pathlib import Path
 
-# プロジェクトルートの db/ に migiude.db を配置
-DB_DIR = Path(__file__).resolve().parent
-DB_PATH = DB_DIR / "migiude.db"
+from dotenv import load_dotenv
+
+# プロジェクトルートの .env を確実に読み込む
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+import sqlite3
+from datetime import datetime
+
+# DBパス: .env の MIGIUDE_DB_PATH があればそれを使用（パス問題対策）
+_project_root = Path(__file__).resolve().parent.parent
+_default_db = _project_root / "db" / "migiude.db"
+_env_path = os.environ.get("MIGIUDE_DB_PATH")
+if _env_path:
+    DB_PATH = Path(_env_path)
+else:
+    DB_PATH = _default_db
+DB_DIR = DB_PATH.parent
+DB_PATH = DB_PATH.resolve()  # 絶対パスに統一
+
+
+def get_db_path() -> str:
+    """DBファイルの絶対パスを返す（デバッグ・確認用）。"""
+    return str(DB_PATH.resolve())
 
 
 def get_connection():
     """DB接続を返す。"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -197,7 +217,14 @@ def save_project(data: dict, project_type: str, sqlite_mode: str = "both") -> in
                 ),
             )
         conn.commit()
-        return cur.lastrowid
+        pk = cur.lastrowid
+        # 即時反映確認: 保存直後に同一DBから件数を取得・ログ出力
+        _verify = conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
+        _log_path = DB_DIR / "sqlite_debug.log"
+        with open(_log_path, "a", encoding="utf-8") as f:
+            from datetime import datetime as dt
+            f.write(f"{dt.now().isoformat()} | DB={DB_PATH} | saved_id={pk} | total_count={_verify}\n")
+        return pk
     finally:
         conn.close()
 

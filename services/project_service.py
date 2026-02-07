@@ -103,11 +103,18 @@ def register_project_from_corins(
     data["folder_path"] = folder_path
 
     init_db()
-    sqlite_mode = "both"
-    if get_db_selection:
-        sqlite_mode = get_db_selection().get("sqlite_mode", "both")
-    pk = save_project(data, project_type, sqlite_mode)
 
+    db_sel = get_db_selection() if get_db_selection else {}
+    save_to_sqlite = db_sel.get("sqlite", True)
+    sqlite_mode = db_sel.get("sqlite_mode", "both")
+
+    # 工事登録はSQLiteを必須とする（プロジェクトID・設計図書紐付けのため）
+    if not save_to_sqlite:
+        raise ValueError(
+            "工事登録にはSQLiteが必要です。設定でSQLiteを有効にしてください。"
+        )
+
+    pk = save_project(data, project_type, sqlite_mode)
     saved = get_project_by_id(pk)
 
     # Neo4jに保存（save_to_neo4j が None の場合は設定に従う。False の場合はスキップ）

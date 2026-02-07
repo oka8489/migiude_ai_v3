@@ -15,12 +15,18 @@ load_dotenv()
 from anthropic import Anthropic
 
 try:
-    from services.config_service import get_schema, get_parser_config
+    from services.config_service import get_parser_config
 except ImportError:
-    get_schema = None
     get_parser_config = None
 
 DESIGN_DOC_SOURCE_NAME = "設計図書"
+
+# 設計図書はスキーマ設定不要。固定の最小項目のみ抽出
+DEFAULT_DESIGN_SCHEMA = [
+    {"key": "document_title", "type": "string", "description": "文書タイトル"},
+    {"key": "project_name", "type": "string", "description": "工事名"},
+    {"key": "project_code", "type": "string", "description": "工事コード"},
+]
 
 
 def extract_text_from_pdf(pdf_path: str) -> str:
@@ -65,14 +71,10 @@ def parse_design_doc_pdf(pdf_path: str) -> dict:
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY が設定されていません。")
 
-    schema = None
+    schema = DEFAULT_DESIGN_SCHEMA
     parser_config = None
-    if get_schema:
-        schema = get_schema(DESIGN_DOC_SOURCE_NAME)
     if get_parser_config:
         parser_config = get_parser_config()
-    if schema is None:
-        schema = []
     if parser_config is None:
         parser_config = {"model": "claude-sonnet-4-20250514", "max_tokens": 4096}
 
