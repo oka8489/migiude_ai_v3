@@ -98,6 +98,14 @@ def init_db() -> None:
             if "duplicate column name" not in str(e).lower():
                 raise
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS kb_folders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS design_documents (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 project_id INTEGER,
