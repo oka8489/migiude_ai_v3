@@ -161,22 +161,107 @@ def init_db() -> None:
                     pass
         except Exception:
             pass
+        # document_skills（書類Skill定義）
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS migiude_rules (
+            CREATE TABLE IF NOT EXISTS document_skills (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                category TEXT NOT NULL,
-                rule_name TEXT NOT NULL,
-                rule_content TEXT NOT NULL,
-                is_active INTEGER DEFAULT 1,
-                priority INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                skill_name TEXT NOT NULL,
+                description TEXT,
+                input_mode TEXT NOT NULL
+                    CHECK(input_mode IN ('extract', 'text')),
+                skill_md_path TEXT,
+                template_path TEXT,
+                sample_path TEXT,
+                output_format TEXT DEFAULT 'xlsx'
+                    CHECK(output_format IN ('xlsx', 'docx', 'pdf')),
+                use_vision INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        # マイグレーション: document_skills の input_mode に 'text' を追加
+        try:
+            cur = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='document_skills'"
+            )
+            row = cur.fetchone()
+            if row and row[0] and "'text'" not in row[0] or "'hearing'" in row[0]:
+                # 旧スキーマ（text なし）→ テーブル再作成
+                conn.execute("PRAGMA foreign_keys=OFF")
+                conn.execute("""
+                    CREATE TABLE document_skills_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        skill_name TEXT NOT NULL,
+                        description TEXT,
+                        input_mode TEXT NOT NULL
+                            CHECK(input_mode IN ('extract', 'text')),
+                        skill_md_path TEXT,
+                        template_path TEXT,
+                        sample_path TEXT,
+                        output_format TEXT DEFAULT 'xlsx'
+                            CHECK(output_format IN ('xlsx', 'docx', 'pdf')),
+                        use_vision INTEGER DEFAULT 0,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                conn.execute("""
+                    INSERT INTO document_skills_new
+                    SELECT id, skill_name, description,
+                        CASE WHEN input_mode='hearing' THEN 'text' ELSE input_mode END,
+                        skill_md_path, template_path, sample_path, output_format, use_vision,
+                        created_at, updated_at
+                    FROM document_skills
+                """)
+                conn.execute("DROP TABLE document_skills")
+                conn.execute("ALTER TABLE document_skills_new RENAME TO document_skills")
+                conn.execute("PRAGMA foreign_keys=ON")
+                conn.commit()
+        except sqlite3.OperationalError:
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.rollback()
+        # skill_required_sources（必要なデータ元書類）
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS skill_required_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id INTEGER NOT NULL,
+                source_name TEXT NOT NULL,
+                source_type TEXT NOT NULL
+                    CHECK(source_type IN ('pdf', 'xlsx', 'xls', 'image', 'db_query')),
+                source_description TEXT,
+                source_path TEXT,
+                is_required INTEGER DEFAULT 1,
+                db_table TEXT,
+                db_query_template TEXT,
+                FOREIGN KEY (skill_id) REFERENCES document_skills(id) ON DELETE CASCADE
+            )
+        """)
+        conn.commit()
+        # skill_field_mappings（フィールドマッピング）
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS skill_field_mappings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id INTEGER NOT NULL,
+                field_name TEXT NOT NULL,
+                cell_reference TEXT,
+                source_id INTEGER,
+                extraction_hint TEXT,
+                default_value TEXT,
+                FOREIGN KEY (skill_id) REFERENCES document_skills(id) ON DELETE CASCADE,
+                FOREIGN KEY (source_id) REFERENCES skill_required_sources(id) ON DELETE SET NULL
             )
         """)
         conn.commit()
         # design_documents テーブルは不要（設計図書はChromaのみに保存）
         try:
             conn.execute("DROP TABLE IF EXISTS design_documents")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+        # migiude_rules はClaude Desktopのスキルで管理するため不要
+        try:
+            conn.execute("DROP TABLE IF EXISTS migiude_rules")
             conn.commit()
         except sqlite3.OperationalError:
             pass
@@ -427,141 +512,159 @@ def clear_kb_data() -> None:
         conn.close()
 
 
-# ========== migiude_rules（mmモードルール） ==========
+# ========== document_skills（書類Skill） ==========
 
 
-def get_migiude_rules(category: str | None = None) -> list[dict]:
-    """migiude_rulesを取得。category指定時はフィルタ。"""
-    conn = get_connection()
-    try:
-        if category:
-            cur = conn.execute(
-                "SELECT * FROM migiude_rules WHERE category = ? ORDER BY priority DESC, id",
-                (category,),
-            )
-        else:
-            cur = conn.execute(
-                "SELECT * FROM migiude_rules ORDER BY priority DESC, category, id"
-            )
-        rows = cur.fetchall()
-        return [dict(row) for row in rows]
-    finally:
-        conn.close()
+def _parse_mappings_from_skill_md(skill_md: str) -> list[dict]:
+    """SKILL.mdからマッピングルールをパースする。"""
+    import re
+    mappings = []
+    # 「マッピングルール」セクションのテーブルを探す
+    match = re.search(r"## マッピングルール.*?\n([\s\S]*?)(?=\n## |\Z)", skill_md)
+    if not match:
+        return mappings
+    table = match.group(1)
+    lines = table.strip().split("\n")
+    if len(lines) < 2:
+        return mappings
+    # ヘッダー行をスキップ（| JSONキー | → | セル位置 | 変換ルール |）
+    for line in lines[2:]:
+        if "|" not in line:
+            continue
+        cells = [c.strip() for c in line.split("|") if c.strip()]
+        if len(cells) >= 3:
+            field_name = cells[0]  # JSONキー
+            cell_ref = cells[2] if len(cells) > 2 else ""  # セル位置
+            hint = cells[3] if len(cells) > 3 else ""  # 変換ルール/抽出ヒント
+            if field_name and not field_name.startswith("---"):
+                mappings.append({
+                    "field_name": field_name,
+                    "cell_reference": cell_ref if "!" in cell_ref or re.match(r"[A-Z]+\d+", cell_ref) else "",
+                    "extraction_hint": hint,
+                })
+    return mappings
 
 
-def get_migiude_rules_categories() -> list[str]:
-    """登録済みカテゴリ一覧を取得。"""
-    conn = get_connection()
-    try:
-        cur = conn.execute(
-            "SELECT DISTINCT category FROM migiude_rules ORDER BY category"
-        )
-        return [row[0] for row in cur.fetchall()]
-    finally:
-        conn.close()
-
-
-def save_migiude_rule(
-    category: str,
-    rule_name: str,
-    rule_content: str,
-    priority: int = 0,
-    is_active: int = 1,
-    rule_id: int | None = None,
+def register_skill_to_db(
+    skill_name: str,
+    description: str,
+    input_mode: str,
+    use_vision: bool = False,
 ) -> int:
-    """migiude_ruleを保存。rule_id指定時は更新。"""
-    now = datetime.now().isoformat()
+    """
+    save_skill_package()の後に呼ぶ。SQLiteにSkill情報を登録する。
+    既存の場合は更新する。
+    """
+    skill_dir_rel = f"skills/{skill_name}"
+    skill_dir_full = _project_root / "skills" / skill_name
+
+    if not skill_dir_full.exists():
+        raise FileNotFoundError(f"スキルディレクトリが存在しません: {skill_dir_rel}")
+
+    # テンプレート・サンプルのパスを検出（拡張子は .xlsx または .xls）
+    template_path = ""
+    sample_path = ""
+    for ext in [".xlsx", ".xls"]:
+        bp = skill_dir_full / f"template_blank{ext}"
+        fp = skill_dir_full / f"template_filled{ext}"
+        if bp.exists():
+            template_path = f"{skill_dir_rel}/template_blank{ext}"
+        if fp.exists():
+            sample_path = f"{skill_dir_rel}/template_filled{ext}"
+        if template_path and sample_path:
+            break
+
+    if not template_path:
+        template_path = f"{skill_dir_rel}/template_blank.xlsx"
+    if not sample_path:
+        sample_path = f"{skill_dir_rel}/template_filled.xlsx"
+
+    skill_md_path = f"{skill_dir_rel}/SKILL.md"
+    skill_md_full = skill_dir_full / "SKILL.md"
+
     conn = get_connection()
     try:
-        if rule_id:
+        existing = conn.execute(
+            "SELECT id FROM document_skills WHERE skill_name = ?", (skill_name,)
+        ).fetchone()
+
+        now = datetime.now().isoformat()
+
+        if existing:
+            skill_id = existing[0]
             conn.execute(
-                """UPDATE migiude_rules SET
-                    category=?, rule_name=?, rule_content=?, is_active=?, priority=?,
-                    updated_at=?
+                """UPDATE document_skills SET
+                    description=?, input_mode=?, skill_md_path=?, template_path=?,
+                    sample_path=?, use_vision=?, updated_at=?
                 WHERE id=?""",
-                (category, rule_name, rule_content, is_active, priority, now, rule_id),
+                (description, input_mode, skill_md_path, template_path, sample_path,
+                 1 if use_vision else 0, now, skill_id),
             )
-            conn.commit()
-            return rule_id
+            conn.execute("DELETE FROM skill_required_sources WHERE skill_id = ?", (skill_id,))
+            conn.execute("DELETE FROM skill_field_mappings WHERE skill_id = ?", (skill_id,))
         else:
             cur = conn.execute(
-                """INSERT INTO migiude_rules (category, rule_name, rule_content, is_active, priority)
+                """INSERT INTO document_skills
+                (skill_name, description, input_mode, skill_md_path, template_path, sample_path, use_vision)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (skill_name, description, input_mode, skill_md_path, template_path, sample_path,
+                 1 if use_vision else 0),
+            )
+            skill_id = cur.lastrowid
+
+        conn.commit()
+
+        # skill_required_sources（Phase 1: 1ファイルのみ）
+        source_path = ""
+        src_type = "pdf"
+        for ext in [".pdf", ".xlsx", ".xls", ".md", ".txt"]:
+            sp = skill_dir_full / f"source_sample{ext}"
+            if sp.exists():
+                source_path = f"{skill_dir_rel}/source_sample{ext}"
+                raw = ext.lstrip(".").lower()
+                src_type = "xls" if raw == "xls" else ("xlsx" if raw in ("xlsx", "xlsm") else "pdf")
+                break
+
+        if source_path:
+            conn.execute(
+                """INSERT INTO skill_required_sources
+                (skill_id, source_name, source_type, source_path, is_required)
                 VALUES (?, ?, ?, ?, ?)""",
-                (category, rule_name, rule_content, is_active, priority),
+                (skill_id, "データ元書類", src_type, source_path, 1),
             )
             conn.commit()
-            return cur.lastrowid
+
+        # skill_field_mappings（SKILL.mdからパース）
+        if skill_md_full.exists():
+            with open(skill_md_full, "r", encoding="utf-8") as f:
+                skill_md = f.read()
+            mappings = _parse_mappings_from_skill_md(skill_md)
+            for m in mappings:
+                conn.execute(
+                    """INSERT INTO skill_field_mappings
+                    (skill_id, field_name, cell_reference, extraction_hint)
+                    VALUES (?, ?, ?, ?)""",
+                    (skill_id, m["field_name"], m.get("cell_reference") or "", m.get("extraction_hint") or ""),
+                )
+            conn.commit()
+
+        return skill_id
     finally:
         conn.close()
 
 
-def update_migiude_rule_active(rule_id: int, is_active: bool) -> None:
-    """ルールの有効/無効を切り替え。"""
+def get_document_skills(skill_name_pattern: str | None = None) -> list[dict]:
+    """document_skills を取得。skill_name_pattern 指定時は LIKE で絞り込み。"""
     conn = get_connection()
     try:
-        conn.execute(
-            "UPDATE migiude_rules SET is_active=?, updated_at=? WHERE id=?",
-            (1 if is_active else 0, datetime.now().isoformat(), rule_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def delete_migiude_rule(rule_id: int) -> bool:
-    """migiude_ruleを削除。"""
-    conn = get_connection()
-    try:
-        cur = conn.execute("DELETE FROM migiude_rules WHERE id = ?", (rule_id,))
-        conn.commit()
-        return cur.rowcount > 0
-    finally:
-        conn.close()
-
-
-def count_migiude_rules() -> int:
-    """migiude_rulesの件数を返す。"""
-    conn = get_connection()
-    try:
-        cur = conn.execute("SELECT COUNT(*) FROM migiude_rules")
-        return cur.fetchone()[0]
-    finally:
-        conn.close()
-
-
-def insert_initial_migiude_rules() -> None:
-    """テーブルが空の場合、初期ルールを投入。"""
-    if count_migiude_rules() > 0:
-        return
-    rules = [
-        (
-            "日報作成",
-            "日報インタビューフロー",
-            "インタビュー形式で日報を作成。回答中に経験・判断・工夫を検知したら深掘りする。最後に『覚えておきましょうか？』と確認し、OKならChromaのtacit_knowledge（category/tags/project_code付き）に保存する。",
-            0,
-        ),
-        (
-            "DB検索",
-            "情報不足時の対応",
-            "検索して情報がない場合、『ありません』で終わらず、その情報を得るために必要なドキュメントや行動を提案する。例：『この情報は○○の書類に記載されています。アップロードしますか？』",
-            0,
-        ),
-        (
-            "応答スタイル",
-            "基本応答ルール",
-            "建設業の現場所長に話すようなトーンで応答する。専門用語はそのまま使い、過度な説明は省く。",
-            0,
-        ),
-    ]
-    conn = get_connection()
-    try:
-        for category, rule_name, rule_content, priority in rules:
-            conn.execute(
-                """INSERT INTO migiude_rules (category, rule_name, rule_content, is_active, priority)
-                VALUES (?, ?, ?, ?, ?)""",
-                (category, rule_name, rule_content, 1, priority),
+        if skill_name_pattern:
+            cur = conn.execute(
+                "SELECT * FROM document_skills WHERE skill_name LIKE ? ORDER BY id",
+                (f"%{skill_name_pattern}%",),
             )
-        conn.commit()
+        else:
+            cur = conn.execute("SELECT * FROM document_skills ORDER BY id")
+        return [dict(row) for row in cur.fetchall()]
     finally:
         conn.close()
 
