@@ -120,12 +120,13 @@ def extract_with_claude(text: str, schema: list | None = None, parser_config: di
     return json.loads(raw)
 
 
-def parse_corins_file(file_path: str) -> dict:
+def parse_corins_file(file_path: str, pre_extracted_text: str | None = None) -> dict:
     """
     コリンズファイル（PDF/MD）を解析し、登録番号・件名・請負金額などの情報をJSON形式で返す。
 
     Args:
         file_path: PDFまたはMDファイルのパス
+        pre_extracted_text: 事前に抽出したテキスト（Vision API等で取得した場合）
 
     Returns:
         抽出した情報の辞書。キー: corins_id, project_name, contract_amount,
@@ -136,7 +137,7 @@ def parse_corins_file(file_path: str) -> dict:
         FileNotFoundError: ファイルが存在しない場合
         ValueError: ANTHROPIC_API_KEYが未設定、またはClaudeの応答が不正な場合
     """
-    text = extract_text_from_file(file_path)
+    text = pre_extracted_text if pre_extracted_text is not None else extract_text_from_file(file_path)
     if not text or not text.strip():
         raise ValueError(f"ファイルからテキストを抽出できませんでした: {file_path}")
 

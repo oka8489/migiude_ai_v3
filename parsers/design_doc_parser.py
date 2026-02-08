@@ -45,6 +45,7 @@ def extract_text_from_pdf_by_page(pdf_path: str) -> list[tuple[int, str]]:
     path = Path(pdf_path)
     if not path.exists():
         raise FileNotFoundError(f"PDFが見つかりません: {pdf_path}")
+
     result = []
     with pdfplumber.open(pdf_path) as pdf:
         for i, page in enumerate(pdf.pages):
@@ -72,9 +73,9 @@ def _build_schema_prompt(schema: list) -> str:
     return "\n".join(lines) if lines else "- （スキーマが空です）"
 
 
-def parse_design_doc_pdf(pdf_path: str) -> dict:
+def parse_design_doc_pdf(pdf_path: str, pre_extracted_text: str | None = None) -> dict:
     """設計図書PDFを解析し、情報をJSON形式で返す。"""
-    text = extract_text_from_pdf(pdf_path)
+    text = pre_extracted_text if pre_extracted_text is not None else extract_text_from_pdf(pdf_path)
     if not text or not text.strip():
         raise ValueError(f"PDFからテキストを抽出できませんでした: {pdf_path}")
 

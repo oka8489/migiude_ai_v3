@@ -69,7 +69,10 @@ def _generate_project_code(project_name: str) -> str:
 
 
 def register_project_from_corins(
-    file_path: str, project_type: str, save_to_neo4j: bool | None = None
+    file_path: str,
+    project_type: str,
+    save_to_neo4j: bool | None = None,
+    pre_extracted_text: str | None = None,
 ) -> dict:
     """
     コリンズファイル（PDF/MD）から工事を登録する。
@@ -78,11 +81,12 @@ def register_project_from_corins(
         file_path: コリンズPDFまたはMDのパス
         project_type: 'past' または 'current'
         save_to_neo4j: Neo4jに保存するか。Noneの場合は設定に従う。Falseで明示的にスキップ。
+        pre_extracted_text: 事前に抽出したテキスト（Vision API等で取得した場合）
 
     Returns:
         保存したデータ（idを含む、project_code, folder_pathを含む）
     """
-    data = parse_corins_file(file_path)
+    data = parse_corins_file(file_path, pre_extracted_text=pre_extracted_text)
 
     # 解析結果が空の場合は明示的にエラー
     if not data or not isinstance(data, dict):

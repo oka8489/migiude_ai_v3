@@ -105,6 +105,71 @@ def init_db() -> None:
             )
         """)
         conn.commit()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS kb_documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                doc_id INTEGER UNIQUE,
+                folder_id INTEGER,
+                title TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                total_chunks INTEGER DEFAULT 0,
+                page_count INTEGER DEFAULT 0,
+                toc TEXT,
+                source_url TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (folder_id) REFERENCES kb_folders(id)
+            )
+        """)
+        conn.commit()
+        # マイグレーション: Chromaの既存データをkb_documentsに反映
+        try:
+            cur = conn.execute("SELECT COUNT(*) FROM kb_documents")
+            if cur.fetchone()[0] == 0:
+                try:
+                    from services.chroma_service import get_or_create_collection
+                    col = get_or_create_collection("knowledge_base")
+                    all_data = col.get(include=["metadatas"], limit=10000)
+                    metas = all_data.get("metadatas") or []
+                    if metas and isinstance(metas[0], list):
+                        metas = [m for sub in metas for m in (sub or [])]
+                    if metas:
+                        seen = set()
+                        for meta in metas:
+                            if not meta:
+                                continue
+                            doc_id = meta.get("doc_id")
+                            if not doc_id or doc_id in seen:
+                                continue
+                            seen.add(doc_id)
+                            folder_name = meta.get("folder", "")
+                            folder_id = None
+                            if folder_name:
+                                fc = conn.execute("SELECT id FROM kb_folders WHERE name = ?", (folder_name,))
+                                row = fc.fetchone()
+                                if row:
+                                    folder_id = row[0]
+                            conn.execute(
+                                "INSERT OR IGNORE INTO kb_documents (doc_id, folder_id, title, source_type, total_chunks) VALUES (?, ?, ?, ?, ?)",
+                                (doc_id, folder_id, meta.get("source_title", "不明"), meta.get("source_type", ""), meta.get("total_chunks", 0)),
+                            )
+                        conn.commit()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS migiude_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT NOT NULL,
+                rule_name TEXT NOT NULL,
+                rule_content TEXT NOT NULL,
+                is_active INTEGER DEFAULT 1,
+                priority INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
         # design_documents テーブルは不要（設計図書はChromaのみに保存）
         try:
             conn.execute("DROP TABLE IF EXISTS design_documents")
@@ -343,6 +408,145 @@ def delete_project(id: int) -> bool:
                 shutil.rmtree(full_path)
 
         return deleted
+    finally:
+        conn.close()
+
+
+# ========== migiude_rules（/mモードルール） ==========
+
+
+def get_migiude_rules(category: str | None = None) -> list[dict]:
+    """migiude_rulesを取得。category指定時はフィルタ。"""
+    conn = get_connection()
+    try:
+        if category:
+            cur = conn.execute(
+                "SELECT * FROM migiude_rules WHERE category = ? ORDER BY priority DESC, id",
+                (category,),
+            )
+        else:
+            cur = conn.execute(
+                "SELECT * FROM migiude_rules ORDER BY priority DESC, category, id"
+            )
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_migiude_rules_categories() -> list[str]:
+    """登録済みカテゴリ一覧を取得。"""
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT DISTINCT category FROM migiude_rules ORDER BY category"
+        )
+        return [row[0] for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def save_migiude_rule(
+    category: str,
+    rule_name: str,
+    rule_content: str,
+    priority: int = 0,
+    is_active: int = 1,
+    rule_id: int | None = None,
+) -> int:
+    """migiude_ruleを保存。rule_id指定時は更新。"""
+    now = datetime.now().isoformat()
+    conn = get_connection()
+    try:
+        if rule_id:
+            conn.execute(
+                """UPDATE migiude_rules SET
+                    category=?, rule_name=?, rule_content=?, is_active=?, priority=?,
+                    updated_at=?
+                WHERE id=?""",
+                (category, rule_name, rule_content, is_active, priority, now, rule_id),
+            )
+            conn.commit()
+            return rule_id
+        else:
+            cur = conn.execute(
+                """INSERT INTO migiude_rules (category, rule_name, rule_content, is_active, priority)
+                VALUES (?, ?, ?, ?, ?)""",
+                (category, rule_name, rule_content, is_active, priority),
+            )
+            conn.commit()
+            return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def update_migiude_rule_active(rule_id: int, is_active: bool) -> None:
+    """ルールの有効/無効を切り替え。"""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE migiude_rules SET is_active=?, updated_at=? WHERE id=?",
+            (1 if is_active else 0, datetime.now().isoformat(), rule_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_migiude_rule(rule_id: int) -> bool:
+    """migiude_ruleを削除。"""
+    conn = get_connection()
+    try:
+        cur = conn.execute("DELETE FROM migiude_rules WHERE id = ?", (rule_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def count_migiude_rules() -> int:
+    """migiude_rulesの件数を返す。"""
+    conn = get_connection()
+    try:
+        cur = conn.execute("SELECT COUNT(*) FROM migiude_rules")
+        return cur.fetchone()[0]
+    finally:
+        conn.close()
+
+
+def insert_initial_migiude_rules() -> None:
+    """テーブルが空の場合、初期ルールを投入。"""
+    if count_migiude_rules() > 0:
+        return
+    rules = [
+        (
+            "日報作成",
+            "日報インタビューフロー",
+            "インタビュー形式で日報を作成。回答中に経験・判断・工夫を検知したら深掘りする。最後に『覚えておきましょうか？』と確認し、OKならChromaのtacit_knowledge（category/tags/project_code付き）に保存する。",
+            0,
+        ),
+        (
+            "DB検索",
+            "情報不足時の対応",
+            "検索して情報がない場合、『ありません』で終わらず、その情報を得るために必要なドキュメントや行動を提案する。例：『この情報は○○の書類に記載されています。アップロードしますか？』",
+            0,
+        ),
+        (
+            "応答スタイル",
+            "基本応答ルール",
+            "建設業の現場所長に話すようなトーンで応答する。専門用語はそのまま使い、過度な説明は省く。",
+            0,
+        ),
+    ]
+    conn = get_connection()
+    try:
+        for category, rule_name, rule_content, priority in rules:
+            conn.execute(
+                """INSERT INTO migiude_rules (category, rule_name, rule_content, is_active, priority)
+                VALUES (?, ?, ?, ?, ?)""",
+                (category, rule_name, rule_content, 1, priority),
+            )
+        conn.commit()
     finally:
         conn.close()
 
