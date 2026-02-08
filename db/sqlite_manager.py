@@ -121,38 +121,42 @@ def init_db() -> None:
             )
         """)
         conn.commit()
-        # マイグレーション: Chromaの既存データをkb_documentsに反映
+        # マイグレーション: Chromaのフォルダ別コレクション(kb_N)をkb_documentsに反映
         try:
             cur = conn.execute("SELECT COUNT(*) FROM kb_documents")
             if cur.fetchone()[0] == 0:
                 try:
-                    from services.chroma_service import get_or_create_collection
-                    col = get_or_create_collection("knowledge_base")
-                    all_data = col.get(include=["metadatas"], limit=10000)
-                    metas = all_data.get("metadatas") or []
-                    if metas and isinstance(metas[0], list):
-                        metas = [m for sub in metas for m in (sub or [])]
-                    if metas:
-                        seen = set()
-                        for meta in metas:
-                            if not meta:
-                                continue
-                            doc_id = meta.get("doc_id")
-                            if not doc_id or doc_id in seen:
-                                continue
-                            seen.add(doc_id)
-                            folder_name = meta.get("folder", "")
-                            folder_id = None
-                            if folder_name:
-                                fc = conn.execute("SELECT id FROM kb_folders WHERE name = ?", (folder_name,))
-                                row = fc.fetchone()
-                                if row:
-                                    folder_id = row[0]
-                            conn.execute(
-                                "INSERT OR IGNORE INTO kb_documents (doc_id, folder_id, title, source_type, total_chunks) VALUES (?, ?, ?, ?, ?)",
-                                (doc_id, folder_id, meta.get("source_title", "不明"), meta.get("source_type", ""), meta.get("total_chunks", 0)),
-                            )
-                        conn.commit()
+                    from services.chroma_service import _get_client
+                    client = _get_client()
+                    import re
+                    for col_obj in client.list_collections():
+                        name = col_obj.name
+                        m = re.match(r"^kb_(\d+)$", name)
+                        if not m:
+                            continue
+                        folder_id = int(m.group(1))
+                        col = client.get_collection(name=name)
+                        all_data = col.get(include=["metadatas"], limit=10000)
+                        metas = all_data.get("metadatas") or []
+                        if metas and isinstance(metas[0], list):
+                            metas = [m for sub in metas for m in (sub or [])]
+                        if metas:
+                            fc = conn.execute("SELECT id FROM kb_folders WHERE id = ?", (folder_id,))
+                            if not fc.fetchone():
+                                conn.execute("INSERT INTO kb_folders (id, name) VALUES (?, ?)", (folder_id, f"フォルダ{folder_id}"))
+                            seen = set()
+                            for meta in metas:
+                                if not meta:
+                                    continue
+                                doc_id = meta.get("doc_id")
+                                if not doc_id or doc_id in seen:
+                                    continue
+                                seen.add(doc_id)
+                                conn.execute(
+                                    "INSERT OR IGNORE INTO kb_documents (doc_id, folder_id, title, source_type, total_chunks) VALUES (?, ?, ?, ?, ?)",
+                                    (doc_id, folder_id, meta.get("source_title", "不明"), meta.get("source_type", ""), meta.get("total_chunks", 0)),
+                                )
+                    conn.commit()
                 except Exception:
                     pass
         except Exception:
@@ -412,7 +416,18 @@ def delete_project(id: int) -> bool:
         conn.close()
 
 
-# ========== migiude_rules（/mモードルール） ==========
+def clear_kb_data() -> None:
+    """kb_documents と kb_folders をクリアする（ライブラリを空にする）。"""
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM kb_documents")
+        conn.execute("DELETE FROM kb_folders")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ========== migiude_rules（mmモードルール） ==========
 
 
 def get_migiude_rules(category: str | None = None) -> list[dict]:
